@@ -55,7 +55,15 @@ def log_analysis(result: dict, source: str = "app") -> None:
 
     result: the dict returned by pipeline.analyse_battery()
     source: "app" (single) or "batch" (from batch page)
+
+    NOTE: On Streamlit Cloud, logging is disabled to protect user privacy
+    (the SQLite file is ephemeral there anyway and would be shared between
+    users). Local runs still log to data/history.db.
     """
+    import os
+    if os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("STREAMLIT_CLOUD"):
+        return
+
     init_db()
 
     top_centre = "-"
