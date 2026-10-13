@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual env
+venv/
+env/
+ENV/
+
+# Streamlit local
+.streamlit/secrets.toml
+
+# Local DBs
+data/history.db
+data/battery_passport.db
+
+# Test artifacts
+sample_report.pdf
+patch_de.py
+write_de.py
+write_data.py
+make_sample_csv.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/

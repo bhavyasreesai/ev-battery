@@ -1,0 +1,129 @@
+EV BATTERY PROJECT — TODO LIST
+================================
+
+DEFERRED (do later):
+--------------------
+
+[ ] Module 8 — Admin Dashboard (REALISTIC MARKET VERSION)
+    Status: building now with synthetic data; swap in real data
+            after speaking with officials.
+    Real facilities to use as pins:
+        * Bridge Green Upcycle (Gummidipoondi, TN)    — 7,200 MTPA
+        * Rocklink India (Sikandrabad, UP)            — 10,000 MTPA
+        * LICO Materials (Karnataka)                  — 25,000 TPA
+        * Lohum (Greater Noida, UP)                   — 20,000 TPA
+        * Epic Energy / REFNIC (Wada, MH)             — 500 kg/hr
+    Real market KPIs:
+        * India Li-ion recycling: $37.4M -> $138M by 2031 (19.5% CAGR)
+        * EPR registered producers: 3,664
+        * EPR registered recyclers: 442
+        * Li-ion waste by 2030: >800,000 tonnes
+    Policy anchor: Battery Waste Management Rules 2022 (EPR)
+    Synthetic district heatmap (clearly labeled as estimate)
+    Material economics in INR (Li/Co/Ni/Cu/Al/graphite prices)
+    NOTE: Wait for official data before finalizing real numbers.
+
+[ ] SoH-dependent material recovery
+    Currently: Content = weight × chemistry fraction
+               Recovered = Content × rate
+               SoH does not affect materials table (physically correct
+               but less interesting — degraded cells extract less)
+    Later:     multiply recovery by soh_factor = 0.75 + (soh/100)*0.25
+    Files:     src/material_extraction.py, src/pipeline.py
+    Paper:     "Recovery yields are SoH-dependent: EOL cells yield
+                10-15% less Li due to SEI-layer trapping."
+
+[ ] Retrain ML model on real-scale data
+    Currently uses physics formula because Random Forest trained on
+    cycle 1-168 (broken for real cycle counts 0-2000).
+
+[ ] Add citations for recovery rates in material_extraction.py
+
+COMPLETED:
+----------
+
+[x] Modules 1-6: data pipeline, model, decision engine
+[x] Module 7: buyer dashboard (app.py)
+    - Sidebar inputs + SoH slider
+    - 4 top metrics (Chem/SoH/RUL/Model)
+    - Decision banner with 5 colors
+    - Confidence bar + reasons expander
+    - Recoverable materials table
+    - Hazardous handling + residual
+    - Recommended recycling centres table
+    - Top pick success banner
+[x] Physics-based RUL fallback (predict_rul formula)
+[x] Model label updated to "Physics-based (SoH curve)"
+[x] Module 9: Carbon savings calculator (Module A)
+    - New file: src/carbon.py
+      * CO2 factors per material (Argonne GREET 2023):
+        Li 5.0, Co 4.0, Ni 3.5, Cu 2.0, Al 1.5, Graphite 1.0
+      * Functions: carbon_avoided(), carbon_breakdown()
+    - pipeline.py: added carbon_avoided_kg + carbon_breakdown to result
+    - app.py: 5th top metric "CO2 avoided" + "Environmental impact"
+      section + per-material breakdown expander
+    - pages/1_Admin.py: 5th KPI "CO2 avoided (kt)" + new bar chart
+      "CO2 avoided by material (kilotonnes)"
+    - Buyer example (320 kg LFP, SoH 28%): 214 kg CO2 avoided
+    - National total (29 districts): 10.6 kt CO2 avoided
+    - Caption cites GREET 2023 (defensible for paper)
+[x] Module 10: PDF report export (Module B)
+    - New file: src/report.py (uses reportlab 5.0.1)
+    - Generates 1-page A4 PDF:
+      * Header (title + date + battery ID)
+      * Battery details table
+      * Recommendation + confidence + reasons
+      * Recoverable materials table (if recycling)
+      * Hazardous + residual (if recycling)
+      * Recommended centres table + top pick (if recycling)
+      * Environmental impact + per-material CO2 breakdown
+      * Method note + footer
+    - app.py: added "Download PDF report" button below
+      Environmental impact section
+    - File naming: battery_report_<battery_id>.pdf
+    - Layout: A4 with 12mm margins, 8pt table font (single page)
+[x] Module 11: Batch processing (Module C)
+    - New file: pages/2_Batch.py
+    - Sidebar shows "Batch" as third page
+    - Upload CSV -> process each battery -> download results CSV
+    - Download template CSV button provides correct format
+    - Summary: total, CONTINUE_EV, RECYCLE, CO2 avoided
+    - Full decision breakdown (all 5 actions)
+    - Results CSV columns: battery_id, chemistry, soh, rul,
+      decision, confidence, carbon_kg, top_centre
+    - Sample data: data/batch_sample.csv (25 batteries)
+    - Verified: 25 batteries processed, 3,172 kg CO2 avoided
+[x] Module 12: Database logging (Module D)
+    - New file: src/history.py
+      * SQLite database at data/history.db
+      * Table "analyses" with columns:
+        id, timestamp, battery_id, chemistry, capacity_kwh, weight_kg,
+        cycle, voltage, temperature, capacity, soh, rul, decision,
+        confidence, carbon_avoided_kg, top_centre, source
+      * Functions: init_db, log_analysis, fetch_history, count_rows,
+        clear_history
+    - New page: pages/3_History.py
+      * KPI row: total analyses, unique batteries, most common decision,
+        total CO2 avoided
+      * Filters: battery type, decision, source
+      * Decision breakdown bar chart
+      * Full log table (newest first)
+      * Download filtered history as CSV
+      * Danger zone: clear history
+    - app.py: calls log_analysis(result, source="app") after each analysis
+    - pages/2_Batch.py: calls log_analysis(r, source="batch") per battery
+    - Verified: 32 rows logged (6 from app, 25 from batch, 1 from test)
+[ ] Module 13: REST API (Module E) — DEFERRED
+    Status: On hold. Do AFTER deployment (Module F).
+    Why deferred: User wants to prioritize deployment first.
+
+    Plan when we return:
+    - Install: pip install fastapi uvicorn
+    - New file: api.py (or src/api.py)
+    - Endpoints:
+        GET  /         - health check
+        POST /analyze  - send battery JSON, get decision + materials + carbon
+        GET  /docs     - auto-generated interactive docs (FastAPI built-in)
+    - Run: uvicorn api:app --reload  (port 8000, separate from Streamlit 8501)
+    - Log each API call to history.db with source="api"
+    - Test with curl + browser /docs page

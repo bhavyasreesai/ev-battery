@@ -1,0 +1,15 @@
+pandas
+numpy
+scikit-learn
+xgboost
+shap
+matplotlib
+seaborn
+plotly
+streamlit
+folium
+streamlit-folium
+joblib
+sqlalchemy
+python-dotenv
+reportlab
