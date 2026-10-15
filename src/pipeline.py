@@ -29,29 +29,25 @@ def load_model():
     return _model, _meta
 
 
+
 def predict_rul(cycle, voltage, temperature, capacity, soh):
     """
-    Physics-informed RUL estimate.
-
-    The Random Forest model was trained on a small (34-battery) dataset
-    with a narrow feature range and does not extrapolate to real-world
-    battery cycle counts. This function uses a degradation curve instead.
+    Heuristic RUL estimate based on SoH and temperature.
+    This is an estimate, not a validated real-world prediction.
     """
-    soh = float(soh)
-    if soh >= 80.0:
-        rul = 1000 + (soh - 80.0) * 50.0
-    elif soh >= 60.0:
-        rul = (soh - 60.0) * 50.0
-    elif soh >= 40.0:
-        rul = (soh - 40.0) * 10.0
-    else:
-        rul = 0.0
-
+    soh = max(0.0, min(100.0, float(soh)))
     temp = float(temperature)
+
+    # Smooth, continuous estimate: 0 cycles at 0% SoH,
+    # increasing to 2000 cycles at 100% SoH.
+    rul = 20.0 * soh
+
+    # Apply a temperature penalty above 40°C.
     if temp > 40.0:
         rul *= max(0.5, 1.0 - (temp - 40.0) * 0.02)
 
     return max(0, int(round(rul)))
+
 
 
 # Mapping from material_extraction.py keys to carbon factor keys

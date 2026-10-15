@@ -13,6 +13,7 @@ import pandas as pd
 from pipeline import analyse_battery
 from report import generate_report
 from history import log_analysis
+from database import get_battery, add_health_snapshot, record_decision
 
 st.set_page_config(
     page_title="EV Battery Lifecycle",
@@ -45,21 +46,64 @@ st.sidebar.subheader("Safety")
 safe = st.sidebar.checkbox("Passed safety check", value=True)
 damaged = st.sidebar.checkbox("Physically damaged / swollen", value=False)
 
-# ----- Run pipeline -----
-result = analyse_battery(
-    battery_id=battery_id,
-    chemistry=chemistry,
-    capacity_kwh=capacity_kwh,
-    weight_kg=weight_kg,
-    cycle=cycle,
-    voltage=voltage,
-    temperature=temperature,
-    capacity=capacity,
-    soh=soh,
-    safe=safe,
-    damaged=damaged,
-)
-log_analysis(result, source="app")
+
+# ----- Run pipeline only when requested -----
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
+if st.button("Analyse Battery", type="primary"):
+    registered_battery = get_battery(battery_id)
+
+    if not registered_battery:
+        st.error(
+            f"Battery {battery_id} is not registered in the Battery Passport. "
+            "Register it in the Seller dashboard first."
+        )
+        st.stop()
+
+    result = analyse_battery(
+        battery_id=battery_id,
+        chemistry=chemistry,
+        capacity_kwh=capacity_kwh,
+        weight_kg=weight_kg,
+        cycle=cycle,
+        voltage=voltage,
+        temperature=temperature,
+        capacity=capacity,
+        soh=soh,
+        safe=safe,
+        damaged=damaged,
+    )
+
+    add_health_snapshot(
+        battery_id=battery_id,
+        cycle_count=cycle,
+        soh=result["soh"],
+        rul=result["rul"],
+        voltage=voltage,
+        temperature=temperature,
+    )
+
+    record_decision(
+        battery_id=battery_id,
+        action=result["decision"],
+        confidence=result["confidence"],
+        reasons=result.get("reasons", []),
+        recommended_centre=(
+            result["centres"][0].get("centre_id")
+            if result.get("centres")
+            else None
+        ),
+    )
+
+    log_analysis(result, source="app")
+    st.session_state.analysis_result = result
+
+result = st.session_state.analysis_result
+
+if result is None:
+    st.info("Enter the battery details in the sidebar, then click Analyse Battery.")
+    st.stop()
 
 # ----- Top row: key metrics -----
 col1, col2, col3, col4, col5 = st.columns(5)

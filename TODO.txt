@@ -127,3 +127,14 @@ COMPLETED:
     - Run: uvicorn api:app --reload  (port 8000, separate from Streamlit 8501)
     - Log each API call to history.db with source="api"
     - Test with curl + browser /docs page
+[ ] Module 14: Deployment to Streamlit Cloud (Module F)
+    Status: PENDING APPROVAL from research head before deploying
+    - GitHub repo: https://github.com/bhavyasreesai/ev-battery
+    - Code is pushed and up to date
+    - Streamlit Cloud account created and linked to GitHub
+    - History logging disabled on cloud (already done in code)
+    - Next: get head's approval, then click "Deploy" on
+      https://share.streamlit.io
+    - Alternative hosting to consider if head prefers:
+      * University/institutional server
+      * Custom domain

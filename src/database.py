@@ -83,18 +83,22 @@ def init_db():
     print(f"Initialised DB at {DB_PATH}")
 
 
+
 def register_battery(battery_id, chemistry, capacity_kwh,
                      weight_kg, manufacturer, owner, location):
     now = datetime.utcnow().isoformat()
+
     with connect() as con:
         con.execute("""
-            INSERT OR REPLACE INTO batteries
+            INSERT INTO batteries
             (battery_id, chemistry, capacity_kwh, weight_kg,
              manufacturer, current_owner, current_location, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (battery_id, chemistry, capacity_kwh, weight_kg,
               manufacturer, owner, location, now))
+
     print(f"Registered {battery_id}")
+
 
 
 def transfer_ownership(battery_id, new_owner, role="buyer"):
