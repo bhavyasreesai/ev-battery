@@ -1,9 +1,12 @@
+
 import sqlite3
+import re
 from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
 import pandas as pd
+
 
 # Use the existing project database
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "battery_passport.db"
@@ -20,7 +23,8 @@ def connect_db():
 
 
 def get_batteries():
-    with connect_db() as con:
+    conn = connect_db()
+    try:
         return pd.read_sql_query(
             """
             SELECT battery_id, chemistry, capacity_kwh, weight_kg,
@@ -28,312 +32,579 @@ def get_batteries():
             FROM batteries
             ORDER BY battery_id
             """,
-            con,
+            conn,
         )
+    finally:
+        conn.close()
 
 
-st.title("Seller")
-st.caption("Register batteries, view Battery Passports, and manage ownership.")
+def get_seller_batteries(seller_name):
+    conn = connect_db()
+    try:
+        return pd.read_sql_query(
+            """
+            SELECT b.battery_id, b.chemistry, b.capacity_kwh,
+                   b.weight_kg, b.manufacturer
+            FROM batteries b
+            WHERE b.current_owner = ?
+              AND NOT EXISTS (
+                SELECT 1
+                FROM battery_listings l
+                WHERE l.battery_id = b.battery_id
+                  AND l.status = 'Available'
+            )
+            ORDER BY b.battery_id
+            """,
+            conn,
+            params=(seller_name,),
+        )
+    finally:
+        conn.close()
 
-if not DB_PATH.exists():
-    st.error("The existing battery database was not found. No database was created.")
-    st.stop()
 
-tab1, tab2, tab3 = st.tabs(
-    ["Register Battery", "Battery Passport", "Transfer Ownership"]
+def get_listings(seller_name=None):
+    conn = connect_db()
+    try:
+        query = """
+                SELECT listing_id, battery_id, seller_name,
+                       seller_city, seller_state, seller_pincode,
+                       asking_price, status, listed_at
+                FROM battery_listings \
+                """
+        params = ()
+
+        if seller_name:
+            query += " WHERE seller_name = ?"
+            params = (seller_name,)
+
+        query += " ORDER BY listed_at DESC"
+
+        return pd.read_sql_query(query, conn, params=params)
+    finally:
+        conn.close()
+
+
+st.title("Seller Dashboard")
+st.caption(
+    "Register batteries, view Battery Passports, manage ownership, "
+    "and list batteries for sale."
 )
 
-# --------------------------------------------------
+if not DB_PATH.exists():
+    st.error("Battery database not found. Please initialise the database first.")
+    st.stop()
+
+
+tab1, tab2, tab3, tab4 = st.tabs(
+    [
+        "Register Battery",
+        "Sell Battery",
+        "Battery Passport",
+        "Transfer Ownership",
+    ]
+)
+
+
+# ---------------------------------------------------------
 # TAB 1: REGISTER BATTERY
-# --------------------------------------------------
+# ---------------------------------------------------------
+
 with tab1:
     st.subheader("Register a New Battery")
 
     with st.form("seller_register_battery"):
-        battery_id = st.text_input(
-            "Unique Battery ID",
-            placeholder="Example: EVB-IN-000248",
-        ).strip()
+        battery_id = st.text_input("Battery ID")
 
-        chemistry = st.selectbox("Battery Chemistry", ["LFP", "NMC", "NCA", "Other"])
+        chemistry = st.selectbox(
+            "Battery Chemistry",
+            ["LFP", "NMC", "NCA", "Other"],
+        )
 
         capacity_kwh = st.number_input(
-            "Capacity (kWh)", min_value=0.1, value=50.0, step=1.0
+            "Capacity (kWh)",
+            min_value=0.1,
+            value=50.0,
+            step=1.0,
         )
 
         weight_kg = st.number_input(
-            "Weight (kg)", min_value=0.1, value=300.0, step=10.0
+            "Weight (kg)",
+            min_value=0.1,
+            value=300.0,
+            step=10.0,
         )
 
         manufacturer = st.text_input("Manufacturer")
-        owner = st.text_input("Seller / Current Owner")
+        owner = st.text_input("Current Owner")
         location = st.text_input("Current Location")
 
         submitted = st.form_submit_button("Register Battery")
 
     if submitted:
-        if not all([battery_id, manufacturer.strip(), owner.strip(), location.strip()]):
-            st.warning("Please complete the battery ID, manufacturer, owner, and location.")
+        if not all([battery_id.strip(), manufacturer.strip(),
+                    owner.strip(), location.strip()]):
+            st.error("Please fill in all required fields.")
         else:
+            conn = connect_db()
             try:
-                with connect_db() as con:
-                    existing = con.execute(
-                        "SELECT 1 FROM batteries WHERE battery_id = ?",
-                        (battery_id,),
-                    ).fetchone()
+                existing = conn.execute(
+                    "SELECT battery_id FROM batteries WHERE battery_id = ?",
+                    (battery_id.strip(),),
+                ).fetchone()
 
-                    if existing:
-                        st.error(
-                            "This battery ID already exists. "
-                            "Choose a different ID; the existing record was not changed."
+                if existing:
+                    st.error("This Battery ID is already registered.")
+                else:
+                    now = datetime.now().isoformat()
+
+                    conn.execute(
+                        """
+                        INSERT INTO batteries (
+                            battery_id, chemistry, capacity_kwh,
+                            weight_kg, manufacturer, current_owner,
+                            current_location, created_at
                         )
-                    else:
-                        now = datetime.now().isoformat()
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            battery_id.strip(),
+                            chemistry,
+                            capacity_kwh,
+                            weight_kg,
+                            manufacturer.strip(),
+                            owner.strip(),
+                            location.strip(),
+                            now,
+                        ),
+                    )
 
-                        con.execute(
-                            """
-                            INSERT INTO batteries (
-                                battery_id, chemistry, capacity_kwh, weight_kg,
-                                manufacturer, current_owner, current_location,
-                                created_at
-                            )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                battery_id,
-                                chemistry,
-                                capacity_kwh,
-                                weight_kg,
-                                manufacturer.strip(),
-                                owner.strip(),
-                                location.strip(),
-                                now,
-                            ),
+                    conn.execute(
+                        """
+                        INSERT INTO ownership (
+                            battery_id, owner_name, role, from_date
                         )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            battery_id.strip(),
+                            owner.strip(),
+                            "seller",
+                            now,
+                        ),
+                    )
 
-                        con.execute(
-                            """
-                            INSERT INTO ownership (
-                                battery_id, owner, role, from_date, to_date
-                            )
-                            VALUES (?, ?, ?, ?, NULL)
-                            """,
-                            (battery_id, owner.strip(), "seller", now),
-                        )
+                    conn.commit()
+                    st.success("Battery registered successfully!")
 
-                st.success(f"Battery {battery_id} registered successfully.")
-
-            except sqlite3.Error as error:
-                st.error(f"Registration failed. Database error: {error}")
+            except sqlite3.Error as e:
+                conn.rollback()
+                st.error(f"Database error: {e}")
+            finally:
+                conn.close()
 
 
-# --------------------------------------------------
-# TAB 2: BATTERY PASSPORT
-# --------------------------------------------------
+# ---------------------------------------------------------
+# TAB 2: SELL BATTERY
+# ---------------------------------------------------------
+
 with tab2:
+    st.subheader("List Your Battery for Sale")
+
+    batteries_df = get_batteries()
+
+    if batteries_df.empty:
+        st.info("Register a battery before creating a sale listing.")
+    else:
+        owners = sorted(
+            batteries_df["current_owner"].dropna().unique().tolist()
+        )
+
+        if not owners:
+            st.info("No registered battery owners were found.")
+        else:
+            seller_name = st.selectbox(
+                "Seller / Current Owner",
+                owners,
+                key="listing_seller",
+            )
+
+            seller_batteries = get_seller_batteries(seller_name)
+
+            if seller_batteries.empty:
+                st.info(
+                    "This owner has no batteries available to list. "
+                    "A battery already listed for sale cannot be listed again."
+                )
+            else:
+                st.write("**Battery available for listing**")
+
+                battery_options = seller_batteries["battery_id"].tolist()
+
+                selected_battery = st.selectbox(
+                    "Select Battery",
+                    battery_options,
+                    key="listing_battery",
+                )
+
+                selected_details = seller_batteries[
+                    seller_batteries["battery_id"] == selected_battery
+                    ].iloc[0]
+
+                st.write(
+                    f"Chemistry: **{selected_details['chemistry']}**"
+                )
+                st.write(
+                    f"Capacity: **{selected_details['capacity_kwh']} kWh**"
+                )
+                st.write(
+                    f"Weight: **{selected_details['weight_kg']} kg**"
+                )
+
+                st.divider()
+                st.write("**Seller Location**")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    seller_city = st.text_input(
+                        "City",
+                        key="seller_city",
+                    )
+
+                    seller_state = st.text_input(
+                        "State",
+                        key="seller_state",
+                    )
+
+                with col2:
+                    seller_pincode = st.text_input(
+                        "PIN Code",
+                        max_chars=6,
+                        key="seller_pincode",
+                    )
+
+                    asking_price = st.number_input(
+                        "Asking Price (₹)",
+                        min_value=1.0,
+                        value=50000.0,
+                        step=1000.0,
+                        key="seller_asking_price",
+                    )
+
+                if st.button("Create Sale Listing"):
+                    if not seller_city.strip() or not seller_state.strip():
+                        st.error("Please enter the seller's city and state.")
+
+                    elif not re.fullmatch(r"\d{6}", seller_pincode.strip()):
+                        st.error("Please enter a valid 6-digit Indian PIN code.")
+
+                    elif asking_price <= 0:
+                        st.error("Asking price must be greater than zero.")
+
+                    else:
+                        conn = connect_db()
+
+                        try:
+                            current = conn.execute(
+                                """
+                                SELECT current_owner
+                                FROM batteries
+                                WHERE battery_id = ?
+                                """,
+                                (selected_battery,),
+                            ).fetchone()
+
+                            if not current or current[0] != seller_name:
+                                st.error(
+                                    "The selected seller is no longer "
+                                    "the current owner of this battery."
+                                )
+
+                            else:
+                                active_listing = conn.execute(
+                                    """
+                                    SELECT listing_id
+                                    FROM battery_listings
+                                    WHERE battery_id = ?
+                                      AND status = 'Available'
+                                    """,
+                                    (selected_battery,),
+                                ).fetchone()
+
+                                if active_listing:
+                                    st.error(
+                                        "This battery already has an active listing."
+                                    )
+                                else:
+                                    conn.execute(
+                                        """
+                                        INSERT INTO battery_listings (
+                                            battery_id, seller_name,
+                                            seller_city, seller_state,
+                                            seller_pincode, asking_price,
+                                            status, listed_at
+                                        )
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                        """,
+                                        (
+                                            selected_battery,
+                                            seller_name,
+                                            seller_city.strip(),
+                                            seller_state.strip(),
+                                            seller_pincode.strip(),
+                                            asking_price,
+                                            "Available",
+                                            datetime.now().isoformat(),
+                                        ),
+                                    )
+
+                                    conn.commit()
+                                    st.success(
+                                        "Battery successfully listed for sale!"
+                                    )
+
+                        except sqlite3.Error as e:
+                            conn.rollback()
+                            st.error(f"Database error: {e}")
+
+                        finally:
+                            conn.close()
+
+    st.divider()
+    st.subheader("Marketplace Listing Status")
+
+    all_listings = get_listings()
+
+    if all_listings.empty:
+        st.info("No marketplace listings have been created yet.")
+    else:
+        st.dataframe(
+            all_listings,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        available_count = (
+                all_listings["status"] == "Available"
+        ).sum()
+
+        sold_count = (
+                all_listings["status"] == "Sold"
+        ).sum()
+
+        col1, col2 = st.columns(2)
+
+        col1.metric("Available Listings", int(available_count))
+        col2.metric("Sold Listings", int(sold_count))
+
+
+# ---------------------------------------------------------
+# TAB 3: BATTERY PASSPORT
+# ---------------------------------------------------------
+
+with tab3:
     st.subheader("Battery Passport")
 
-    batteries = get_batteries()
+    batteries_df = get_batteries()
 
-    if batteries.empty:
-        st.info("No batteries have been registered yet.")
+    if batteries_df.empty:
+        st.info("No batteries registered yet.")
     else:
-        st.dataframe(batteries, hide_index=True, use_container_width=True)
+        st.dataframe(
+            batteries_df,
+            use_container_width=True,
+            hide_index=True,
+        )
 
         selected_id = st.selectbox(
             "Select Battery ID",
-            batteries["battery_id"].tolist(),
+            batteries_df["battery_id"].tolist(),
             key="passport_battery",
         )
 
-        with connect_db() as con:
-            battery = con.execute(
+        conn = connect_db()
+
+        try:
+            battery = pd.read_sql_query(
                 "SELECT * FROM batteries WHERE battery_id = ?",
-                (selected_id,),
-            ).fetchone()
+                conn,
+                params=(selected_id,),
+            )
 
             ownership = pd.read_sql_query(
                 """
-                SELECT owner, role, from_date, to_date
-                FROM ownership
+                SELECT * FROM ownership
                 WHERE battery_id = ?
-                ORDER BY id
+                ORDER BY from_date
                 """,
-                con,
+                conn,
                 params=(selected_id,),
             )
 
             health = pd.read_sql_query(
                 """
-                SELECT timestamp, cycle_count, soh, rul, voltage, temperature
-                FROM health_snapshots
+                SELECT * FROM health_snapshots
                 WHERE battery_id = ?
                 ORDER BY timestamp DESC
                 """,
-                con,
+                conn,
                 params=(selected_id,),
             )
 
             decisions = pd.read_sql_query(
                 """
-                SELECT timestamp, action, confidence, reasons, recommended_centre
-                FROM decisions
+                SELECT * FROM decisions
                 WHERE battery_id = ?
                 ORDER BY timestamp DESC
                 """,
-                con,
+                conn,
                 params=(selected_id,),
             )
 
             materials = pd.read_sql_query(
                 """
-                SELECT timestamp, material, recovered_kg
-                FROM material_recovery
+                SELECT * FROM material_recovery
                 WHERE battery_id = ?
-                ORDER BY timestamp DESC
                 """,
-                con,
+                conn,
                 params=(selected_id,),
             )
 
-        if battery:
-            labels = [
-                "Battery ID", "Chemistry", "Capacity (kWh)", "Weight (kg)",
-                "Manufacturer", "Manufacture Date", "Current Owner",
-                "Current Location", "Created At",
-            ]
+        finally:
+            conn.close()
 
-            st.markdown("#### Battery Information")
-            st.dataframe(
-                pd.DataFrame({"Field": labels, "Value": list(battery)}),
-                hide_index=True,
-                use_container_width=True,
-            )
+        st.write("**Battery Details**")
+        st.dataframe(battery, use_container_width=True, hide_index=True)
 
-        st.markdown("#### Ownership History")
-        if ownership.empty:
-            st.info("No ownership history is recorded for this battery.")
-        else:
-            st.dataframe(ownership, hide_index=True, use_container_width=True)
+        st.write("**Ownership History**")
+        st.dataframe(ownership, use_container_width=True, hide_index=True)
 
-        st.markdown("#### Health History")
-        if health.empty:
-            st.info("No health snapshots are recorded for this battery.")
-        else:
-            st.dataframe(health, hide_index=True, use_container_width=True)
+        st.write("**Health Snapshots**")
+        st.dataframe(health, use_container_width=True, hide_index=True)
 
-        st.markdown("#### Lifecycle Decisions")
-        if decisions.empty:
-            st.info("No lifecycle decisions are recorded for this battery.")
-        else:
-            st.dataframe(decisions, hide_index=True, use_container_width=True)
+        st.write("**Lifecycle Decisions**")
+        st.dataframe(decisions, use_container_width=True, hide_index=True)
 
-        st.markdown("#### Material Recovery")
-        if materials.empty:
-            st.info("No material recovery records are recorded for this battery.")
-        else:
-            st.dataframe(materials, hide_index=True, use_container_width=True)
+        st.write("**Material Recovery Records**")
+        st.dataframe(materials, use_container_width=True, hide_index=True)
 
 
-# --------------------------------------------------
-# TAB 3: TRANSFER OWNERSHIP
-# --------------------------------------------------
-with tab3:
+# ---------------------------------------------------------
+# TAB 4: TRANSFER OWNERSHIP
+# ---------------------------------------------------------
+
+with tab4:
     st.subheader("Transfer Battery Ownership")
 
-    batteries = get_batteries()
+    batteries_df = get_batteries()
 
-    if batteries.empty:
-        st.info("Register a battery before transferring ownership.")
+    if batteries_df.empty:
+        st.info("No batteries available for ownership transfer.")
     else:
         with st.form("seller_transfer_ownership"):
-            transfer_id = st.selectbox(
-                "Battery ID",
-                batteries["battery_id"].tolist(),
+            battery_id = st.selectbox(
+                "Select Battery",
+                batteries_df["battery_id"].tolist(),
                 key="transfer_battery",
             )
 
-            new_owner = st.text_input("New Owner / Buyer")
+            new_owner = st.text_input("New Owner")
+
             role = st.selectbox(
                 "New Owner Role",
                 ["buyer", "second_owner", "recycler", "recovery_centre"],
             )
 
-            transfer_location = st.text_input(
-                "New Location (optional)",
-                help="Leave blank to keep the current location.",
+            new_location = st.text_input(
+                "New Location (optional)"
             )
 
-            transfer_submitted = st.form_submit_button("Transfer Ownership")
+            transfer_submitted = st.form_submit_button(
+                "Transfer Ownership"
+            )
 
         if transfer_submitted:
             if not new_owner.strip():
-                st.warning("Enter the name of the new owner.")
+                st.error("Please enter the new owner's name.")
             else:
+                conn = connect_db()
+
                 try:
-                    with connect_db() as con:
-                        existing = con.execute(
-                            "SELECT current_owner, current_location "
-                            "FROM batteries WHERE battery_id = ?",
-                            (transfer_id,),
-                        ).fetchone()
+                    current = conn.execute(
+                        """
+                        SELECT current_owner
+                        FROM batteries
+                        WHERE battery_id = ?
+                        """,
+                        (battery_id,),
+                    ).fetchone()
 
-                        if existing is None:
-                            st.error("Battery not found. No changes were made.")
-                        elif existing[0] == new_owner.strip():
-                            st.warning(
-                                "The new owner matches the current owner. "
-                                "No transfer was made."
-                            )
-                        else:
-                            now = datetime.now().isoformat()
+                    if not current:
+                        st.error("Battery not found.")
 
-                            con.execute(
-                                """
-                                UPDATE ownership
-                                SET to_date = ?
-                                WHERE battery_id = ? AND to_date IS NULL
-                                """,
-                                (now, transfer_id),
-                            )
-
-                            con.execute(
-                                """
-                                INSERT INTO ownership (
-                                    battery_id, owner, role, from_date, to_date
-                                )
-                                VALUES (?, ?, ?, ?, NULL)
-                                """,
-                                (transfer_id, new_owner.strip(), role, now),
-                            )
-
-                            if transfer_location.strip():
-                                con.execute(
-                                    """
-                                    UPDATE batteries
-                                    SET current_owner = ?, current_location = ?
-                                    WHERE battery_id = ?
-                                    """,
-                                    (
-                                        new_owner.strip(),
-                                        transfer_location.strip(),
-                                        transfer_id,
-                                    ),
-                                )
-                            else:
-                                con.execute(
-                                    """
-                                    UPDATE batteries
-                                    SET current_owner = ?
-                                    WHERE battery_id = ?
-                                    """,
-                                    (new_owner.strip(), transfer_id),
-                                )
-
-                    if existing is not None and existing[0] != new_owner.strip():
-                        st.success(
-                            f"Ownership of {transfer_id} transferred successfully."
+                    elif current[0] == new_owner.strip():
+                        st.warning(
+                            "The selected person is already the current owner."
                         )
 
-                except sqlite3.Error as error:
-                    st.error(f"Transfer failed. Database error: {error}")
+                    else:
+                        now = datetime.now().isoformat()
+
+                        conn.execute(
+                            """
+                            UPDATE ownership
+                            SET to_date = ?
+                            WHERE battery_id = ?
+                              AND to_date IS NULL
+                            """,
+                            (now, battery_id),
+                        )
+
+                        conn.execute(
+                            """
+                            INSERT INTO ownership (
+                                battery_id, owner_name, role, from_date
+                            )
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (
+                                battery_id,
+                                new_owner.strip(),
+                                role,
+                                now,
+                            ),
+                        )
+
+                        if new_location.strip():
+                            conn.execute(
+                                """
+                                UPDATE batteries
+                                SET current_owner = ?,
+                                    current_location = ?
+                                WHERE battery_id = ?
+                                """,
+                                (
+                                    new_owner.strip(),
+                                    new_location.strip(),
+                                    battery_id,
+                                ),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                UPDATE batteries
+                                SET current_owner = ?
+                                WHERE battery_id = ?
+                                """,
+                                (new_owner.strip(), battery_id),
+                            )
+
+                        conn.commit()
+                        st.success("Ownership transferred successfully!")
+
+                except sqlite3.Error as e:
+                    conn.rollback()
+                    st.error(f"Database error: {e}")
+
+                finally:
+                    conn.close()

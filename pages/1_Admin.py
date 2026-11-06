@@ -17,7 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import streamlit as st
 import pandas as pd
+import sqlite3
 import plotly.express as px
+import json
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 from carbon import CO2_FACTORS, MATERIAL_LABELS
 
 st.set_page_config(
@@ -34,6 +38,11 @@ if not DATA.exists():
 
 df = pd.read_csv(DATA)
 
+DB_PATH = (
+        Path(__file__).resolve().parent.parent
+        / "data"
+        / "battery_passport.db"
+)
 # ---------- Real Indian battery recycling facilities (2026) ----------
 FACILITIES = pd.DataFrame([
     {"name": "Bridge Green Upcycle", "state": "Tamil Nadu",     "lat": 13.418, "lon": 80.119, "capacity_tpa": 7200,  "type": "Formal"},
@@ -326,4 +335,660 @@ st.dataframe(
     }),
     width="stretch", hide_index=True,
 )
+
+# ============================================================
+# INDIA BATTERY MARKETPLACE ANALYTICS
+# Source: Actual listings and completed transactions
+# ============================================================
+
+st.markdown("---")
+st.title("India Battery Marketplace Analytics")
+
+st.caption(
+    "Analysis of actual battery listings and completed purchases "
+    "recorded in the existing Battery Passport database."
+)
+
+if not DB_PATH.exists():
+    st.warning("Marketplace database not found.")
+
+else:
+    with sqlite3.connect(DB_PATH) as con:
+        transactions = pd.read_sql_query(
+            """
+            SELECT
+                t.transaction_id,
+                t.battery_id,
+                t.seller_name,
+                l.seller_city,
+                l.seller_state,
+                l.seller_pincode,
+                t.buyer_name,
+                t.buyer_city,
+                t.buyer_state,
+                t.buyer_pincode,
+                l.asking_price,
+                t.selling_price,
+                t.transaction_date,
+                t.status,
+                b.chemistry,
+                b.capacity_kwh
+            FROM transactions t
+                     JOIN battery_listings l
+                          ON t.listing_id = l.listing_id
+                     JOIN batteries b
+                          ON t.battery_id = b.battery_id
+            WHERE t.status = 'Completed'
+            ORDER BY t.transaction_date DESC
+            """,
+            con,
+        )
+
+        listings = pd.read_sql_query(
+            """
+            SELECT
+                listing_id,
+                battery_id,
+                seller_name,
+                seller_city,
+                seller_state,
+                asking_price,
+                status,
+                listed_at
+            FROM battery_listings
+            """,
+            con,
+        )
+
+    # Convert monetary columns to numeric values.
+    if not transactions.empty:
+        transactions["asking_price"] = pd.to_numeric(
+            transactions["asking_price"], errors="coerce"
+        )
+
+        transactions["selling_price"] = pd.to_numeric(
+            transactions["selling_price"], errors="coerce"
+        )
+
+        transactions["buyer_savings"] = (
+                transactions["asking_price"]
+                - transactions["selling_price"]
+        )
+
+    total_listings = len(listings)
+    available_listings = (
+        int((listings["status"] == "Available").sum())
+        if not listings.empty else 0
+    )
+
+    completed_count = len(transactions)
+
+    total_sales_value = (
+        float(transactions["selling_price"].sum())
+        if completed_count else 0.0
+    )
+
+    average_purchase_price = (
+        float(transactions["selling_price"].mean())
+        if completed_count else 0.0
+    )
+
+    total_buyer_savings = (
+        float(transactions["buyer_savings"].sum())
+        if completed_count else 0.0
+    )
+
+    # --------------------------------------------------------
+    # MARKETPLACE KPIs
+    # --------------------------------------------------------
+
+    st.subheader("Marketplace Overview")
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+
+    k1.metric("Total Listings", f"{total_listings:,}")
+    k2.metric("Available Listings", f"{available_listings:,}")
+    k3.metric("Completed Sales", f"{completed_count:,}")
+    k4.metric("Total Sales Value", f"₹{total_sales_value:,.0f}")
+    k5.metric("Buyer Savings", f"₹{total_buyer_savings:,.0f}")
+
+    if transactions.empty:
+        st.info(
+            "No completed marketplace transactions are recorded yet. "
+            "Complete a purchase through the Buyer Dashboard to populate "
+            "these analytics."
+        )
+
+    else:
+        st.caption(
+            "Sales value and savings are calculated only from completed "
+            "transactions. Savings = seller asking price minus actual "
+            "purchase price. A negative value means the buyer paid above "
+            "the asking price."
+        )
+
+        # ----------------------------------------------------
+        # CITY-WISE SELLING AND BUYING ACTIVITY
+        # ----------------------------------------------------
+
+        st.markdown("---")
+        st.subheader("City-wise Buying and Selling Activity")
+
+        seller_activity = (
+            transactions.groupby(
+                ["seller_city", "seller_state"]
+            )
+            .size()
+            .reset_index(name="Transactions")
+            .rename(
+                columns={
+                    "seller_city": "City",
+                    "seller_state": "State",
+                }
+            )
+        )
+
+        seller_activity["Activity"] = "Selling"
+
+        buyer_activity = (
+            transactions.groupby(
+                ["buyer_city", "buyer_state"]
+            )
+            .size()
+            .reset_index(name="Transactions")
+            .rename(
+                columns={
+                    "buyer_city": "City",
+                    "buyer_state": "State",
+                }
+            )
+        )
+
+        buyer_activity["Activity"] = "Buying"
+
+        city_activity = pd.concat(
+            [seller_activity, buyer_activity],
+            ignore_index=True,
+        )
+
+        city_summary = (
+            city_activity.groupby(["City", "State", "Activity"])
+            ["Transactions"]
+            .sum()
+            .reset_index()
+        )
+
+        fig_city = px.bar(
+            city_summary,
+            x="City",
+            y="Transactions",
+            color="Activity",
+            barmode="group",
+            hover_data=["State"],
+            title="Recorded buying and selling transactions by city",
+        )
+
+        fig_city.update_layout(height=420)
+
+        st.plotly_chart(
+            fig_city,
+            use_container_width=True,
+        )
+
+        # ----------------------------------------------------
+        # TOP SELLER CITIES
+        # ----------------------------------------------------
+
+        left, right = st.columns(2)
+
+        with left:
+            st.subheader("Top Seller Cities")
+
+            top_sellers = (
+                transactions.groupby(
+                    ["seller_city", "seller_state"]
+                )
+                .agg(
+                    Transactions=("transaction_id", "count"),
+                    Sales_Value=("selling_price", "sum"),
+                )
+                .reset_index()
+                .sort_values(
+                    "Transactions",
+                    ascending=False,
+                )
+                .head(10)
+                .rename(
+                    columns={
+                        "seller_city": "City",
+                        "seller_state": "State",
+                        "Sales_Value": "Sales Value (₹)",
+                    }
+                )
+            )
+
+            st.dataframe(
+                top_sellers,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        with right:
+            st.subheader("Top Buyer Cities")
+
+            top_buyers = (
+                transactions.groupby(
+                    ["buyer_city", "buyer_state"]
+                )
+                .agg(
+                    Transactions=("transaction_id", "count"),
+                    Purchase_Value=("selling_price", "sum"),
+                )
+                .reset_index()
+                .sort_values(
+                    "Transactions",
+                    ascending=False,
+                )
+                .head(10)
+                .rename(
+                    columns={
+                        "buyer_city": "City",
+                        "buyer_state": "State",
+                        "Purchase_Value": "Purchase Value (₹)",
+                    }
+                )
+            )
+
+            st.dataframe(
+                top_buyers,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        # ----------------------------------------------------
+        # ASKING PRICE VS ACTUAL PURCHASE PRICE
+        # ----------------------------------------------------
+
+        st.markdown("---")
+        st.subheader("Asking Price vs Actual Purchase Price")
+
+        price_comparison = pd.DataFrame(
+            {
+                "Price Type": [
+                    "Seller Asking Price",
+                    "Actual Purchase Price",
+                ],
+                "Average Price (₹)": [
+                    transactions["asking_price"].mean(),
+                    transactions["selling_price"].mean(),
+                ],
+            }
+        )
+
+        fig_price = px.bar(
+            price_comparison,
+            x="Price Type",
+            y="Average Price (₹)",
+            text_auto=",.0f",
+            title="Average battery transaction prices",
+        )
+
+        fig_price.update_layout(height=380)
+
+        st.plotly_chart(
+            fig_price,
+            use_container_width=True,
+        )
+
+        # ----------------------------------------------------
+        # ECONOMIC ANALYSIS
+        # ----------------------------------------------------
+
+        st.markdown("---")
+        st.subheader("Battery Marketplace Economic Analysis")
+
+        average_asking = float(
+            transactions["asking_price"].mean()
+        )
+
+        average_selling = float(
+            transactions["selling_price"].mean()
+        )
+
+        average_savings = float(
+            transactions["buyer_savings"].mean()
+        )
+
+        e1, e2, e3 = st.columns(3)
+
+        e1.metric(
+            "Average Asking Price",
+            f"₹{average_asking:,.0f}",
+        )
+
+        e2.metric(
+            "Average Purchase Price",
+            f"₹{average_selling:,.0f}",
+        )
+
+        e3.metric(
+            "Average Price Difference",
+            f"₹{average_savings:,.0f}",
+        )
+
+        st.caption(
+            "The price difference is based on recorded marketplace "
+            "prices only. It is not automatically a verified saving "
+            "against the cost of a new battery."
+        )
+
+
+
+        # ----------------------------------------------------
+        # BATTERY MOVEMENT MAP - AUTOMATIC CITY LOOKUP
+        # ----------------------------------------------------
+
+        st.markdown("---")
+        st.subheader("Seller-to-Buyer Battery Movement Across India")
+
+        # Persistent coordinate cache
+        CACHE_PATH = (
+                Path(__file__).resolve().parent.parent
+                / "data"
+                / "city_coordinates_cache.json"
+        )
+
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        if CACHE_PATH.exists():
+            try:
+                with open(CACHE_PATH, "r", encoding="utf-8") as file:
+                    coordinate_cache = json.load(file)
+            except (json.JSONDecodeError, OSError):
+                coordinate_cache = {}
+        else:
+            coordinate_cache = {}
+
+        # OpenStreetMap geocoder
+        geolocator = Nominatim(
+            user_agent="ev_battery_lifecycle_dashboard"
+        )
+
+        geocode_with_delay = RateLimiter(
+            geolocator.geocode,
+            min_delay_seconds=1,
+            max_retries=1,
+            error_wait_seconds=2,
+            swallow_exceptions=True,
+        )
+
+        def normalize_city(city):
+            return " ".join(
+                str(city).strip().casefold().split()
+            )
+
+        def get_city_coordinates(city, state=None):
+
+            city = str(city).strip()
+
+            if len(city) < 3:
+                return None
+
+            state = str(state).strip() if state else ""
+
+            cache_key = normalize_city(city) + "|" + normalize_city(state)
+
+            # Return previously saved coordinates
+            if cache_key in coordinate_cache:
+                return tuple(coordinate_cache[cache_key])
+
+            # Search for the city in India
+            query = f"{city}, {state}, India" if state else f"{city}, India"
+
+            try:
+                location = geocode_with_delay(
+                    query,
+                    country_codes="in",
+                )
+
+                if location:
+                    coordinates = (
+                        location.latitude,
+                        location.longitude,
+                    )
+
+                    coordinate_cache[cache_key] = coordinates
+
+                    # Save coordinates for future use
+                    with open(
+                            CACHE_PATH,
+                            "w",
+                            encoding="utf-8",
+                    ) as file:
+                        json.dump(
+                            coordinate_cache,
+                            file,
+                            indent=4,
+                        )
+
+                    return coordinates
+
+            except Exception:
+                pass
+
+            return None
+
+        map_points = []
+        unsupported_cities = set()
+
+        for _, transaction in transactions.iterrows():
+
+            seller_city = str(transaction["seller_city"]).strip()
+            buyer_city = str(transaction["buyer_city"]).strip()
+
+            seller_state = (
+                transaction["seller_state"]
+                if "seller_state" in transactions.columns
+                else ""
+            )
+
+            buyer_state = (
+                transaction["buyer_state"]
+                if "buyer_state" in transactions.columns
+                else ""
+            )
+
+            seller_coords = get_city_coordinates(
+                seller_city,
+                seller_state,
+            )
+
+            buyer_coords = get_city_coordinates(
+                buyer_city,
+                buyer_state,
+            )
+
+            if not seller_coords:
+                unsupported_cities.add(seller_city)
+
+            if not buyer_coords:
+                unsupported_cities.add(buyer_city)
+
+            if seller_coords and buyer_coords:
+
+                map_points.append({
+                    "Battery ID": transaction["battery_id"],
+                    "Seller City": seller_city,
+                    "Buyer City": buyer_city,
+                    "Seller Lat": seller_coords[0],
+                    "Seller Lon": seller_coords[1],
+                    "Buyer Lat": buyer_coords[0],
+                    "Buyer Lon": buyer_coords[1],
+                    "Purchase Price (₹)": transaction["selling_price"],
+                })
+
+        if map_points:
+
+            map_df = pd.DataFrame(map_points)
+
+            city_markers = []
+
+            for _, item in map_df.iterrows():
+
+                city_markers.append({
+                    "City": item["Seller City"],
+                    "Latitude": item["Seller Lat"],
+                    "Longitude": item["Seller Lon"],
+                    "Location Type": "Seller",
+                })
+
+                city_markers.append({
+                    "City": item["Buyer City"],
+                    "Latitude": item["Buyer Lat"],
+                    "Longitude": item["Buyer Lon"],
+                    "Location Type": "Buyer",
+                })
+
+            marker_df = pd.DataFrame(city_markers)
+
+            fig_map = px.scatter_geo(
+                marker_df,
+                lat="Latitude",
+                lon="Longitude",
+                color="Location Type",
+                hover_name="City",
+                projection="natural earth",
+                title="Recorded Battery Transactions Across India",
+            )
+
+            for _, item in map_df.iterrows():
+
+                fig_map.add_scattergeo(
+                    lat=[
+                        item["Seller Lat"],
+                        item["Buyer Lat"],
+                    ],
+                    lon=[
+                        item["Seller Lon"],
+                        item["Buyer Lon"],
+                    ],
+                    mode="lines",
+                    line=dict(width=2),
+                    name=item["Battery ID"],
+                    showlegend=False,
+                    hoverinfo="text",
+                    text=[
+                        f"Seller: {item['Seller City']}",
+                        f"Buyer: {item['Buyer City']}",
+                    ],
+                )
+
+            fig_map.update_geos(
+                lataxis_range=[6, 38],
+                lonaxis_range=[65, 98],
+                showcountries=True,
+                countrycolor="lightgray",
+                showland=True,
+                showcoastlines=True,
+            )
+
+            fig_map.update_layout(
+                height=550,
+                margin=dict(l=0, r=0, t=40, b=0),
+            )
+
+            st.plotly_chart(
+                fig_map,
+                use_container_width=True,
+            )
+
+            st.caption(
+                "Lines represent recorded seller-to-buyer transactions. "
+                "City coordinates are retrieved automatically and cached."
+            )
+
+        else:
+            st.info(
+                "No completed transactions currently have both "
+                "seller and buyer cities successfully mapped."
+            )
+
+        if unsupported_cities:
+            st.warning(
+                "Could not locate these cities: "
+                + ", ".join(sorted(unsupported_cities))
+            )
+
+        # BATTERY MOVEMENT MAP
+        # ----------------------------------------------------
+        # TRANSACTION RECORDS
+        # ----------------------------------------------------
+
+        st.markdown("---")
+        st.subheader("Completed Transaction Records")
+
+        transaction_display = transactions[
+            [
+                "transaction_id",
+                "battery_id",
+                "seller_name",
+                "seller_city",
+                "buyer_name",
+                "buyer_city",
+                "asking_price",
+                "selling_price",
+                "buyer_savings",
+                "transaction_date",
+                "chemistry",
+                "capacity_kwh",
+            ]
+        ].rename(
+            columns={
+                "transaction_id": "Transaction ID",
+                "battery_id": "Battery ID",
+                "seller_name": "Seller",
+                "seller_city": "Seller City",
+                "buyer_name": "Buyer",
+                "buyer_city": "Buyer City",
+                "asking_price": "Asking Price (₹)",
+                "selling_price": "Purchase Price (₹)",
+                "buyer_savings": "Price Difference (₹)",
+                "transaction_date": "Date",
+                "chemistry": "Chemistry",
+                "capacity_kwh": "Capacity (kWh)",
+            }
+        )
+
+        st.dataframe(
+            transaction_display,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        csv_data = transaction_display.to_csv(
+            index=False
+        ).encode("utf-8")
+
+        st.download_button(
+            "Download Transaction Records (CSV)",
+            data=csv_data,
+            file_name="india_battery_transactions.csv",
+            mime="text/csv",
+        )
+
+    # --------------------------------------------------------
+    # CURRENT LISTING STATUS
+    # --------------------------------------------------------
+
+    st.markdown("---")
+    st.subheader("Current Marketplace Listings")
+
+    if listings.empty:
+        st.info("No marketplace listings have been created yet.")
+    else:
+        st.dataframe(
+            listings,
+            hide_index=True,
+            use_container_width=True,
+        )
 
