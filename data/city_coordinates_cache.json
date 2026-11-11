@@ -10,5 +10,53 @@
     "kolkata|x": [
         22.5726459,
         88.3638953
+    ],
+    "anantapur|andhra pradesh": [
+        14.6783221,
+        77.6065039
+    ],
+    "pune|maharashtra": [
+        18.5213738,
+        73.8545071
+    ],
+    "kolkata|west bengal": [
+        22.5726459,
+        88.3638953
+    ],
+    "jaipur|rajasthan": [
+        26.9154576,
+        75.8189817
+    ],
+    "coimbatore|tamil nadu": [
+        11.0018115,
+        76.9628425
+    ],
+    "ahmedabad|gujarat": [
+        23.0215374,
+        72.5800568
+    ],
+    "kochi|kerala": [
+        9.9679032,
+        76.2444378
+    ],
+    "delhi|delhi": [
+        28.6664535,
+        77.2169781
+    ],
+    "hyderabad|telangana": [
+        17.360589,
+        78.4740613
+    ],
+    "mumbai|maharashtra": [
+        19.054999,
+        72.8692035
+    ],
+    "bengaluru|karnataka": [
+        12.9767936,
+        77.590082
+    ],
+    "chennai|tamil nadu": [
+        13.0800915,
+        80.2807978
     ]
 }

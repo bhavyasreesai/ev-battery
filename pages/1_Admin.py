@@ -861,12 +861,13 @@ else:
                 title="Recorded Battery Transactions Across India",
             )
 
+
             for _, item in map_df.iterrows():
 
                 fig_map.add_scattergeo(
                     lat=[
-                        item["Seller Lat"],
-                        item["Buyer Lat"],
+                    item["Seller Lat"],
+                    item["Buyer Lat"],
                     ],
                     lon=[
                         item["Seller Lon"],
@@ -878,7 +879,12 @@ else:
                     showlegend=False,
                     hoverinfo="text",
                     text=[
-                        f"Seller: {item['Seller City']}",
+                        f"Battery ID: {item['Battery ID']}<br>"
+                        f"Seller: {item['Seller City']}<br>"
+                        f"Buyer: {item['Buyer City']}",
+
+                        f"Battery ID: {item['Battery ID']}<br>"
+                        f"Seller: {item['Seller City']}<br>"
                         f"Buyer: {item['Buyer City']}",
                     ],
                 )
@@ -992,3 +998,242 @@ else:
             use_container_width=True,
         )
 
+# ============================================================
+# NASA BATTERY RESEARCH DATASET UPLOAD
+# Separate from the existing Battery Passport database
+# ============================================================
+
+st.markdown("---")
+st.title("NASA Battery Research Dataset")
+st.caption(
+    "Upload and analyse NASA B0005 experimental discharge-cycle data. "
+    "This section does not modify the existing Battery Passport database."
+)
+
+uploaded_nasa_file = st.file_uploader(
+    "Upload NASA battery CSV file",
+    type=["csv"],
+    key="nasa_research_upload"
+)
+
+if uploaded_nasa_file is not None:
+
+    try:
+        nasa_df = pd.read_csv(uploaded_nasa_file)
+
+        required_columns = [
+            "battery_id",
+            "discharge_cycle_number",
+            "cycle_type",
+            "discharge_capacity_Ah",
+            "voltage_mean_V",
+            "temperature_max_C"
+        ]
+
+        missing_columns = [
+            col for col in required_columns
+            if col not in nasa_df.columns
+        ]
+
+        if missing_columns:
+            st.error(
+                f"NASA CSV is missing required columns: {missing_columns}"
+            )
+
+        else:
+            # Convert measurement columns to numeric values
+            numeric_columns = [
+                "discharge_cycle_number",
+                "discharge_capacity_Ah",
+                "voltage_mean_V",
+                "temperature_max_C"
+            ]
+
+            for col in numeric_columns:
+                nasa_df[col] = pd.to_numeric(
+                    nasa_df[col], errors="coerce"
+                )
+
+            # Keep discharge records with valid measurements
+            nasa_df = nasa_df[
+                nasa_df["cycle_type"].astype(str).str.lower() == "discharge"
+                ]
+
+            nasa_df = nasa_df.dropna(
+                subset=numeric_columns
+            )
+
+            nasa_df = nasa_df.sort_values(
+                "discharge_cycle_number"
+            )
+            # Calculate rated-capacity-based State of Health
+            reference_capacity_ah = 2.0
+
+            nasa_df["soh_percent"] = (
+                nasa_df["discharge_capacity_Ah"]
+                / reference_capacity_ah
+                ) * 100
+
+            if nasa_df.empty:
+                st.warning("No valid discharge-cycle records found.")
+
+            else:
+                st.success(
+                    f"Successfully loaded {len(nasa_df)} discharge-cycle records."
+                )
+
+                st.subheader("Dataset Overview")
+
+                st.write(
+                    "Battery ID:",
+                    ", ".join(
+                        nasa_df["battery_id"].astype(str).unique()
+                    )
+                )
+
+                st.metric(
+                    "Discharge cycles",
+                    len(nasa_df)
+                )
+
+                st.dataframe(
+                    nasa_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # ------------------------------------------------
+                # CAPACITY ANALYSIS
+                # ------------------------------------------------
+
+                st.markdown("---")
+                st.subheader("Battery Capacity Degradation")
+
+                first_capacity = float(
+                    nasa_df.iloc[0]["discharge_capacity_Ah"]
+                )
+
+                last_capacity = float(
+                    nasa_df.iloc[-1]["discharge_capacity_Ah"]
+                )
+
+                capacity_change = (
+                                          (last_capacity - first_capacity)
+                                          / first_capacity
+                                  ) * 100
+
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric(
+                    "First uploaded capacity",
+                    f"{first_capacity:.4f} Ah"
+                )
+
+                c2.metric(
+                    "Last uploaded capacity",
+                    f"{last_capacity:.4f} Ah"
+                )
+
+                c3.metric(
+                    "Capacity change",
+                    f"{capacity_change:.2f}%"
+                )
+
+                fig_capacity = px.line(
+                    nasa_df,
+                    x="discharge_cycle_number",
+                    y="discharge_capacity_Ah",
+                    markers=True,
+                    title="Discharge Capacity Across Cycles"
+                )
+
+                fig_capacity.update_layout(
+                    xaxis_title="Discharge Cycle",
+                    yaxis_title="Capacity (Ah)"
+                )
+
+                st.plotly_chart(
+                    fig_capacity,
+                    use_container_width=True
+                )
+
+                # ------------------------------------------------
+                # VOLTAGE ANALYSIS
+                # ------------------------------------------------
+
+                st.markdown("---")
+                st.subheader("Voltage Analysis")
+
+                fig_voltage = px.line(
+                    nasa_df,
+                    x="discharge_cycle_number",
+                    y="voltage_mean_V",
+                    markers=True,
+                    title="Mean Voltage Across Discharge Cycles"
+                )
+
+                fig_voltage.update_layout(
+                    xaxis_title="Discharge Cycle",
+                    yaxis_title="Mean Voltage (V)"
+                )
+
+                st.plotly_chart(
+                    fig_voltage,
+                    use_container_width=True
+                )
+
+                # ------------------------------------------------
+                # TEMPERATURE ANALYSIS
+                # ------------------------------------------------
+
+                st.markdown("---")
+                st.subheader("Temperature Analysis")
+
+                fig_temperature = px.line(
+                    nasa_df,
+                    x="discharge_cycle_number",
+                    y="temperature_max_C",
+                    markers=True,
+                    title="Maximum Temperature Across Discharge Cycles"
+                )
+
+                fig_temperature.update_layout(
+                    xaxis_title="Discharge Cycle",
+                    yaxis_title="Maximum Temperature (°C)"
+                )
+
+                st.plotly_chart(
+                    fig_temperature,
+                    use_container_width=True
+                )
+                # SOH ANALYSIS
+                st.markdown("---")
+                st.subheader("State of Health (SoH) Analysis")
+
+                fig_soh = px.line(
+                    nasa_df,
+                    x="discharge_cycle_number",
+                    y="soh_percent",
+                    markers=True,
+                    title="Calculated SoH Across Discharge Cycles"
+                )
+
+                fig_soh.update_layout(
+                    xaxis_title="Discharge Cycle",
+                    yaxis_title="SoH (%)"
+                )
+
+                st.plotly_chart(
+                    fig_soh,
+                    use_container_width=True
+                )
+
+                st.info(
+                    "Research note: Capacity change above is measured "
+                    "relative to the first uploaded discharge cycle. "
+                    "It is not State of Health (SoH). A documented "
+                    "reference capacity is needed to calculate SoH."
+                )
+
+    except Exception as e:
+        st.error(f"Could not read the NASA CSV file: {e}")

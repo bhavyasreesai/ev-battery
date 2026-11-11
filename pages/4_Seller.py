@@ -95,12 +95,13 @@ if not DB_PATH.exists():
     st.stop()
 
 
-tab1, tab2, tab3, tab4 = st.tabs(
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
     [
         "Register Battery",
         "Sell Battery",
         "Battery Passport",
         "Transfer Ownership",
+        "Edit Battery",
     ]
 )
 
@@ -181,7 +182,7 @@ with tab1:
                     conn.execute(
                         """
                         INSERT INTO ownership (
-                            battery_id, owner_name, role, from_date
+                            battery_id, owner, role, from_date
                         )
                         VALUES (?, ?, ?, ?)
                         """,
@@ -563,7 +564,7 @@ with tab4:
                         conn.execute(
                             """
                             INSERT INTO ownership (
-                                battery_id, owner_name, role, from_date
+                                battery_id, owner, role, from_date
                             )
                             VALUES (?, ?, ?, ?)
                             """,
@@ -574,6 +575,8 @@ with tab4:
                                 now,
                             ),
                         )
+
+
 
                         if new_location.strip():
                             conn.execute(
@@ -608,3 +611,125 @@ with tab4:
 
                 finally:
                     conn.close()
+
+
+# ---------------------------------------------------------
+# TAB 5: EDIT REGISTERED BATTERY
+# ---------------------------------------------------------
+
+with tab5:
+    st.subheader("Edit Registered Battery")
+
+    batteries_df = get_batteries()
+
+    if batteries_df.empty:
+        st.info("No registered batteries available.")
+    else:
+        selected_id = st.selectbox(
+            "Select Battery ID to Edit",
+            batteries_df["battery_id"].tolist(),
+            key="edit_battery_id",
+        )
+
+        conn = connect_db()
+
+        try:
+            battery = conn.execute(
+                """
+                SELECT chemistry, capacity_kwh, weight_kg,
+                       manufacturer, current_owner, current_location
+                FROM batteries
+                WHERE battery_id = ?
+                """,
+                (selected_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if battery:
+            chemistry, capacity, weight, manufacturer, owner, location = battery
+
+            with st.form("edit_registered_battery"):
+
+                st.text_input(
+                    "Battery ID",
+                    value=selected_id,
+                    disabled=True,
+                )
+
+                new_chemistry = st.selectbox(
+                    "Battery Chemistry",
+                    ["LFP", "NMC", "NCA", "Other"],
+                    index=["LFP", "NMC", "NCA", "Other"].index(chemistry)
+                    if chemistry in ["LFP", "NMC", "NCA", "Other"]
+                    else 0,
+                )
+
+                new_capacity = st.number_input(
+                    "Capacity (kWh)",
+                    min_value=0.1,
+                    value=float(capacity or 50.0),
+                    step=1.0,
+                )
+
+                new_weight = st.number_input(
+                    "Weight (kg)",
+                    min_value=0.1,
+                    value=float(weight or 300.0),
+                    step=10.0,
+                )
+
+                new_manufacturer = st.text_input(
+                    "Manufacturer",
+                    value=manufacturer or "",
+                )
+
+                st.text_input(
+                    "Current Owner",
+                    value=owner or "",
+                    disabled=True,
+                )
+
+                new_location = st.text_input(
+                    "Current Location",
+                    value=location or "",
+                )
+
+                update = st.form_submit_button("Update Battery Details")
+
+            if update:
+                if not new_manufacturer.strip() or not new_location.strip():
+                    st.error("Manufacturer and location cannot be empty.")
+                else:
+                    conn = connect_db()
+
+                    try:
+                        conn.execute(
+                            """
+                            UPDATE batteries
+                            SET chemistry = ?,
+                                capacity_kwh = ?,
+                                weight_kg = ?,
+                                manufacturer = ?,
+                                current_location = ?
+                            WHERE battery_id = ?
+                            """,
+                            (
+                                new_chemistry,
+                                new_capacity,
+                                new_weight,
+                                new_manufacturer.strip(),
+                                new_location.strip(),
+                                selected_id,
+                            ),
+                        )
+
+                        conn.commit()
+                        st.success("Battery details updated successfully!")
+
+                    except sqlite3.Error as e:
+                        conn.rollback()
+                        st.error(f"Database error: {e}")
+
+                    finally:
+                        conn.close()

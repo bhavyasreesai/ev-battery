@@ -368,7 +368,7 @@ with tab1:
                                     """
                                     INSERT INTO ownership (
                                         battery_id,
-                                        owner_name,
+                                        owner,
                                         role,
                                         from_date,
                                         to_date
